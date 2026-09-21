@@ -1,0 +1,105 @@
+B9 — the remote-notification background mode reaches the product
+================================================================
+
+Found while verifying B4: every launch of the app logged
+
+  You've implemented -[<UIApplicationDelegate>
+  application:didReceiveRemoteNotification:fetchCompletionHandler:], but
+  you still need to add "remote-notification" to the list of your
+  supported UIBackgroundModes in your Info.plist.
+
+Before — the key was absent from both products
+----------------------------------------------
+$ plutil -p .../Debug-iphonesimulator/skineya-dev.app/Info.plist | grep -i UIBackgroundModes
+(no output)
+
+The project did carry `INFOPLIST_KEY_UIBackgroundModes = "remote-notification"`
+in all four build configurations, but `INFOPLIST_KEY_*` only covers the
+fixed set of keys Xcode knows how to synthesise; an unrecognised one is
+dropped without a diagnostic. The targets also set
+`INFOPLIST_FILE = skineya-Info.plist`, which is the file that actually
+reaches the bundle — `CFBundleURLTypes` (the `skineya://` scheme) proves
+that route works — and it had no UIBackgroundModes entry.
+
+Fix
+---
+`UIBackgroundModes` -> `remote-notification` added to
+`skineya-Info.plist`; the four dead `INFOPLIST_KEY_UIBackgroundModes`
+build settings deleted so nobody reads them and stops looking.
+
+After — both products carry it
+------------------------------
+$ xcodebuild -scheme skineya-dev -configuration Debug \
+      -destination "id=<simulator>" -derivedDataPath ./.dd build
+** BUILD SUCCEEDED **
+$ plutil -p .../Debug-iphonesimulator/skineya-dev.app/Info.plist | grep -A3 -i UIBackgroundModes
+  "UIBackgroundModes" => [
+    0 => "remote-notification"
+  ]
+
+$ xcodebuild -scheme skineya -configuration Release \
+      -destination "id=<simulator>" -derivedDataPath ./.dd-rel \
+      CODE_SIGNING_ALLOWED=NO build
+** BUILD SUCCEEDED **
+$ plutil -p .../Release-iphonesimulator/skineya.app/Info.plist | grep -A3 -i UIBackgroundModes
+  "UIBackgroundModes" => [
+    0 => "remote-notification"
+  ]
+
+The custom URL scheme survives the edit:
+
+$ plutil -p .../Release-iphonesimulator/skineya.app/Info.plist | grep -A3 CFBundleURLSchemes
+      "CFBundleURLSchemes" => [
+        0 => "skineya"
+      ]
+
+After — the warning is gone from the launch console
+---------------------------------------------------
+Fresh install on a clean simulator. The warning used to be the *first*
+line of every launch; it is now absent, while the rest of the console is
+plainly intact:
+
+  [DebugAutoLogin] launch arguments found, signing in
+  📤 REQUEST: POST https://develop.skineya.app/api/v1/login
+     Headers: ["Content-Type": "application/json", "Accept-Language": "en", "Accept": "application/json"]
+     Body: {"password":"<REDACTED>","email":"<REDACTED-EMAIL>"}
+  ✅ RESPONSE: 200 https://develop.skineya.app/api/v1/login
+     Body: {"access_token":"<REDACTED>","refresh_token":"<REDACTED>","token_type":"Bearer","expires_in":3600}
+  …
+  (36 lines for the whole launch; `grep -c UIBackgroundModes` -> 0)
+
+That absence is the proof. For contrast, the same grep over the console
+captured before the fix — see
+`b1-b2-token-registered-after-login.txt`, whose first line is the
+warning — returns 1.
+
+B1/B2 still behave after the change
+-----------------------------------
+Re-run on the fixed build, fresh app container, authorization granted:
+
+  📤 REQUEST: POST https://develop.skineya.app/api/v1/device-tokens
+     Body: {"platform":"ios","token":"<REDACTED-DEVICE-TOKEN>"}
+  ✅ RESPONSE: 201 https://develop.skineya.app/api/v1/device-tokens
+  ✅ Device token registered with backend
+
+Still NOT proven: the silent-push path itself
+---------------------------------------------
+The background mode is now declared, but the simulator still cannot
+exercise `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`.
+
+1. A `content-available`-only payload is rejected before it reaches the
+   app, by simctl's own validation — unchanged by this fix:
+
+     $ xcrun simctl push <udid> com.skineya.dev ski237-silent.json
+     An error was encountered processing the command (domain=UNErrorDomain, code=1401):
+     	Notification has no user visible content
+
+2. A payload carrying both an alert and `content-available: 1` is
+   accepted and the banner is presented, but `handleSilent`'s
+   `🔕 Silent notification received` never logs. `simctl push` injects
+   into the notification centre rather than delivering through the APNs
+   background path, so the app-delegate callback is not invoked at all.
+
+So this commit removes the thing that would have blocked silent push on
+a real device, and that is verified from the built products. Whether the
+handler then does the right thing is still only argued from the code.

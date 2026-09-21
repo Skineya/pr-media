@@ -1,0 +1,34 @@
+B8 — the skineya target's Debug configuration uses skineya-debug.entitlements
+=============================================================================
+
+$ xcodebuild -project skineya.xcodeproj -showBuildSettings \
+      -scheme skineya -configuration Debug \
+      -destination "id=<simulator>" -derivedDataPath ./.dd-skineya \
+  | grep -E "CODE_SIGN_ENTITLEMENTS|PRODUCT_BUNDLE_IDENTIFIER"
+
+    CODE_SIGN_ENTITLEMENTS = skineya-debug.entitlements
+    PRODUCT_BUNDLE_IDENTIFIER = com.skineya.skineya
+
+For contrast, the dev target that everything else here was verified on
+already pointed at a development-APNs entitlements file:
+
+$ xcodebuild ... -scheme skineya-dev -configuration Debug ...
+
+    CODE_SIGN_ENTITLEMENTS = skineya-dev.entitlements
+    PRODUCT_BUNDLE_IDENTIFIER = com.skineya.dev
+
+skineya-debug.entitlements:
+
+    aps-environment                        = development
+    com.apple.developer.associated-domains = applinks:develop.skineya.app
+
+Before this change the `skineya` Debug configuration used
+`skineya.entitlements`, whose `aps-environment` is `production` — a debug
+build signed for the production APNs environment never receives a
+development push. Release still uses `skineya.entitlements`.
+
+Note: this is a build-settings fact, not a runtime one. It was read back
+from the project rather than observed in a running app, because the
+runtime verification in this folder was done on the `skineya-dev` target
+(com.skineya.dev), which is the build this repo's simulator tooling
+installs.

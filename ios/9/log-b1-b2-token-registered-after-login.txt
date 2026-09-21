@@ -1,0 +1,61 @@
+B1 + B2 — device token registered AFTER authentication succeeds
+================================================================
+
+Device:  iPhone 17, iOS 27.0 simulator (dedicated, headless)
+Build:   skineya-dev, Debug, feature branch merged locally with the
+         debug auto-login branch (PR #12) for building only.
+Setup:   fresh install (no session, no cached push_device_token),
+         notification authorization already granted, app launched with
+         -autologin-email / -autologin-password.
+
+Emails, bearer tokens and the APNs hex token are redacted below.
+
+----------------------------------------------------------------------
+2026-09-21 11:28:35.545 skineya-dev[42763:799538] You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+[DebugAutoLogin] launch arguments found, signing in
+📤 REQUEST: POST https://develop.skineya.app/api/v1/login
+   Headers: ["Accept": "application/json", "Accept-Language": "en", "Content-Type": "application/json"]
+   Body: {"email":"<REDACTED-EMAIL>","password":"<REDACTED>"}
+✅ RESPONSE: 200 https://develop.skineya.app/api/v1/login
+   Body: {"access_token":"<REDACTED>","refresh_token":"<REDACTED>","token_type":"Bearer","expires_in":3600}
+📤 REQUEST: POST https://develop.skineya.app/api/v1/device-tokens
+   Headers: ["Content-Type": "application/json", "Authorization": "Bearer <REDACTED>", "Accept": "application/json", "Accept-Language": "en"]
+   Body: {"platform":"ios","token":"<REDACTED-DEVICE-TOKEN>"}
+📤 REQUEST: GET https://develop.skineya.app/api/v1/preferences
+   Headers: ["Content-Type": "application/json", "Authorization": "Bearer <REDACTED>", "Accept": "application/json", "Accept-Language": "en"]
+📤 REQUEST: GET https://develop.skineya.app/api/v1/analyses/latest
+   Headers: ["Content-Type": "application/json", "Authorization": "Bearer <REDACTED>", "Accept": "application/json", "Accept-Language": "en"]
+✅ RESPONSE: 201 https://develop.skineya.app/api/v1/device-tokens
+   Body: {"data":{"id":"<REDACTED>","platform":"ios","created_at":"2026-09-21T09:28:37+00:00","actions":{}}}
+✅ Device token registered with backend
+[DebugAutoLogin] signed in
+----------------------------------------------------------------------
+
+What this proves
+----------------
+B2  APNs hands the token back during launch, while nobody is signed in.
+    `syncTokenIfNeeded()` sees no account and does nothing — there is no
+    401 on `v1/device-tokens` anywhere in this log. The POST is only
+    issued after `POST v1/login` returns 200, and it carries the freshly
+    minted bearer token. The backend answers 201.
+
+B1  The success path logs `✅ Device token registered with backend` and
+    nothing else. The old code decoded the bare JSON string response
+    into a struct and always logged a decode failure here; the
+    body-less `request(_:)` overload no longer does.
+
+And the marker is written
+-------------------------
+UserDefaults of the app container, immediately after the run above:
+
+  "push_device_token"             => "<REDACTED-DEVICE-TOKEN>"
+  "push_device_token_synced_user" => "<REDACTED-EMAIL>"
+
+Second launch, same account, same token — no re-POST
+----------------------------------------------------
+  [DebugAutoLogin] session already present, nothing to do
+
+  (32 lines of console for the whole launch; no `v1/device-tokens`
+  request at all. `syncTokenIfNeeded()`'s
+  `guard account != syncedAccount` short-circuits, so the token is
+  registered once per account rather than on every cold start.)

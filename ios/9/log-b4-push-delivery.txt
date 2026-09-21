@@ -1,0 +1,88 @@
+B4 — push delivery and the notification delegate
+===============================================
+
+Alert push, app in the foreground
+---------------------------------
+$ xcrun simctl push <udid> com.skineya.dev ski237-push.json
+Notification sent to 'com.skineya.dev'
+
+payload:
+  { "aps": { "alert": { "title": "Time for your evening routine",
+                        "body":  "Three steps left today." },
+             "sound": "default", "badge": 1 },
+    "deeplink": "skineya://app/products" }
+
+-> 07-push-banner-foreground.png
+
+The banner is drawn while the app is frontmost, which only happens when
+`UNUserNotificationCenterDelegate.willPresent` returns presentation
+options. That is `PushNotificationService.handleForeground`, i.e. the
+delegate installed by `PushNotificationService.init` is live. (The
+earlier "Source is not authorized" failure was a consequence of the app
+never having been authorized behind the auth wall, not of the payload.)
+
+Alert push, app not running
+---------------------------
+$ xcrun simctl terminate <udid> com.skineya.dev
+$ xcrun simctl push <udid> com.skineya.dev ski237-push.json
+Notification sent to 'com.skineya.dev'
+
+-> 08-push-banner-app-not-running.png (banner + badge 1 on the icon)
+
+NOT verified: the cold-launch *tap*
+-----------------------------------
+There is no Simulator GUI on this machine and `simctl` has no input
+command, so the notification could not be tapped. The claim that the
+delegate is installed before `didFinishLaunching` returns — and that a
+cold-launch tap is therefore replayed into `handleTap` rather than
+dropped — remains reasoned from the code, not observed.
+
+Silent push could not be exercised either
+-----------------------------------------
+$ xcrun simctl push <udid> com.skineya.dev ski237-silent.json
+An error was encountered processing the command (domain=UNErrorDomain, code=1401):
+Simulator device failed to complete the requested operation.
+Underlying error (domain=UNErrorDomain, code=1401):
+	Notification has no user visible content
+
+`simctl push` refuses `content-available`-only payloads, so
+`application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`
+was never entered.
+
+A payload carrying both an alert and `content-available: 1` is accepted
+and its banner is presented, but `handleSilent`'s
+`🔕 Silent notification received` never logs either: `simctl push`
+injects into the notification centre rather than delivering through the
+APNs background path, so the app-delegate callback is not invoked at
+all. The silent path is untestable on the simulator, full stop.
+
+--------------------------------------------------------------------
+NOTE: the UIBackgroundModes problem described below was FOUND here and
+is now FIXED on this branch. See
+`b9-remote-notification-background-mode.txt` for the fix and its
+verification. The description is kept because it is the diagnosis.
+--------------------------------------------------------------------
+
+Every launch of the app used to log:
+
+  You've implemented -[<UIApplicationDelegate>
+  application:didReceiveRemoteNotification:fetchCompletionHandler:], but
+  you still need to add "remote-notification" to the list of your
+  supported UIBackgroundModes in your Info.plist.
+
+Confirmed against the built product: the shipped Info.plist has no
+UIBackgroundModes key at all.
+
+  $ plutil -p .dd/Build/Products/Debug-iphonesimulator/skineya-dev.app/Info.plist \
+      | grep -i UIBackgroundModes
+  (no output)
+
+The project does set `INFOPLIST_KEY_UIBackgroundModes = "remote-notification"`
+in all four build configurations, but the targets also set
+`INFOPLIST_FILE = "skineya-Info.plist"`, and that file carries no
+UIBackgroundModes entry — the INFOPLIST_KEY_ value does not reach the
+product. Until fixed, silent/background pushes would not be delivered on
+device either, which made the silent-push path in AppDelegate dead code
+as shipped. Pre-existing rather than introduced here, but squarely a
+push bug — so it is fixed on this branch. See
+`b9-remote-notification-background-mode.txt`.
